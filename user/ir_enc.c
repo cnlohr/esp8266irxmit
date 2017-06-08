@@ -13,8 +13,19 @@
 #include "user_interface.h"
 #include "pin_mux_register.h"
 
+#ifdef YESIR
 #define WS_I2S_BCK 36  //Shooting for 37 kHz.
 #define WS_I2S_DIV 60
+#define ONCODE 0xAAAA 
+#else
+#define WS_I2S_BCK 30 //25 is minimum 
+#define WS_I2S_DIV 60
+#define ONCODE 0xFFFF
+#endif
+
+
+
+
 
 #ifndef i2c_bbpll
 #define i2c_bbpll                                 0x67
@@ -201,13 +212,15 @@ union sdio_slave_status
 //static struct sdio_queue i2sBufDesc[I2SDMABUFCNT];
 static struct sdio_queue i2sBufDescOut;
 static struct sdio_queue i2sBufDescZeroes;
+static struct sdio_queue i2sBufDescZeroesTwo;
 
 static unsigned int i2sZeroes[32];
+static unsigned int i2sZeroesTwo[32];
 static unsigned int i2sBlock[WS_BLOCKSIZE/4];
 
 //Queue which contains empty DMA buffers
 //DMA underrun counter
-
+volatile int ir_pending;
 LOCAL void slc_isr(void) {
 	struct sdio_queue *finishedDesc;
 	uint32 slc_intr_status;
@@ -218,7 +231,9 @@ LOCAL void slc_isr(void) {
 	WRITE_PERI_REG(SLC_INT_CLR, 0xffffffff);//slc_intr_status);
 	if ( (slc_intr_status & SLC_RX_EOF_INT_ST))
 	{
-		i2sBufDescZeroes.next_link_ptr=(uint32_t)&i2sBufDescZeroes;
+		if( ir_pending) ir_pending--;
+		i2sBufDescZeroes.next_link_ptr=(uint32_t)&i2sBufDescZeroesTwo;
+		i2sBufDescZeroesTwo.next_link_ptr=(uint32_t)&i2sBufDescZeroes;
 		//An interrupt got fired.  It was probably for the zero.
 		//Either way, put zero back at itself from the data.
 	}
@@ -257,16 +272,26 @@ void ICACHE_FLASH_ATTR ir_init()
 	i2sBufDescZeroes.owner = 1;
 	i2sBufDescZeroes.eof = 1;
 	i2sBufDescZeroes.sub_sof = 0;
-	i2sBufDescZeroes.datalen = 32;
-	i2sBufDescZeroes.blocksize = 32;
+	i2sBufDescZeroes.datalen = 8;
+	i2sBufDescZeroes.blocksize = 8;
 	i2sBufDescZeroes.buf_ptr=(uint32_t)&i2sZeroes[0];
 	i2sBufDescZeroes.unused=0;
-	i2sBufDescZeroes.next_link_ptr=(uint32_t)&i2sBufDescZeroes;
+	i2sBufDescZeroes.next_link_ptr=(uint32_t)&i2sBufDescZeroesTwo;
+
+
+	i2sBufDescZeroesTwo.owner = 1;
+	i2sBufDescZeroesTwo.eof = 1;
+	i2sBufDescZeroesTwo.sub_sof = 0;
+	i2sBufDescZeroesTwo.datalen = 8;
+	i2sBufDescZeroesTwo.blocksize = 8;
+	i2sBufDescZeroesTwo.buf_ptr=(uint32_t)&i2sZeroesTwo[0];
+	i2sBufDescZeroesTwo.unused=0;
+	i2sBufDescZeroesTwo.next_link_ptr=(uint32_t)&i2sBufDescZeroes;
 
 
 	for( x = 0; x < 32; x++ )
 	{
-		i2sZeroes[x] = 0x00;
+		i2sZeroesTwo[x] = i2sZeroes[x] = 0x00;
 	}
 	for( x = 0; x < WS_BLOCKSIZE/4; x++ )
 	{
@@ -359,6 +384,8 @@ void ICACHE_FLASH_ATTR ir_push( uint8_t * buffer, uint16_t buffersize )
 	uint16_t * bufferpl_init = (uint16_t*)&i2sBlock[0];
 	uint16_t * bufferpl_end = bufferpl_init;
 
+	ir_pending = 2;
+
 	for( i = 0; i < 42; i++ )
 	{
 		*(bufferpl_end++) = 0xAAAA; //Alternating 1's and 0's.
@@ -375,10 +402,10 @@ void ICACHE_FLASH_ATTR ir_push( uint8_t * buffer, uint16_t buffersize )
 		uint8_t tosend = *(buffer++);
 		for( ; mask; mask>>=1 )
 		{
-			*(bufferpl_end++) = 0xAAAA; //Alternating 1's and 0's.
-			*(bufferpl_end++) = 0xAAAA; //Alternating 1's and 0's.
+			*(bufferpl_end++) = ONCODE; //Alternating 1's and 0's.
+			*(bufferpl_end++) = ONCODE; //Alternating 1's and 0's.
 			*(bufferpl_end++) = 0x0000;
-			*(bufferpl_end++) = 0xAAAA; //Alternating 1's and 0's.
+			*(bufferpl_end++) = ONCODE; //Alternating 1's and 0's.
 			*(bufferpl_end++) = 0x0000;
 			*(bufferpl_end++) = 0x0000;
 			if( tosend & mask )
@@ -394,10 +421,10 @@ void ICACHE_FLASH_ATTR ir_push( uint8_t * buffer, uint16_t buffersize )
 	}
 
 	//Send ending pulse.
-	*(bufferpl_end++) = 0xAAAA;
-	*(bufferpl_end++) = 0xAAAA;
+	*(bufferpl_end++) = ONCODE;
+	*(bufferpl_end++) = ONCODE;
 	*(bufferpl_end++) = 0x0000;
-	*(bufferpl_end++) = 0xAAAA;
+	*(bufferpl_end++) = ONCODE;
 
 	*(bufferpl_end++) = 0x0000;
 	*(bufferpl_end++) = 0x0000;
@@ -405,7 +432,7 @@ void ICACHE_FLASH_ATTR ir_push( uint8_t * buffer, uint16_t buffersize )
 	uint16_t sending = bufferpl_end - bufferpl_init;
 	sending &= ~1;  //Make sure it rounds down to a quantity-of-4 bytes.
 
-	printf( "SENDING: %d\n", sending );
+	//printf( "SENDING: %d\n", sending );
 	//int sending = 32;
 
 	i2sBufDescOut.owner = 1;
@@ -417,8 +444,25 @@ void ICACHE_FLASH_ATTR ir_push( uint8_t * buffer, uint16_t buffersize )
 	i2sBufDescOut.unused = 0;
 
 	i2sBufDescZeroes.next_link_ptr=(uint32_t)&i2sBufDescOut; //At the end, just redirect the DMA to the zero buffer.
+	i2sBufDescZeroesTwo.next_link_ptr=(uint32_t)&i2sBufDescOut; //At the end, just redirect the DMA to the zero buffer.
 
 
+/*
+
+
+
+
+
+
+
+	CLEAR_PERI_REG_MASK(SLC_RX_LINK, SLC_RXLINK_START);
+	CLEAR_PERI_REG_MASK(SLC_RX_LINK,SLC_RXLINK_DESCADDR_MASK);
+	SET_PERI_REG_MASK(SLC_RX_LINK, ((uint32)&i2sBufDescOut) & SLC_RXLINK_DESCADDR_MASK);
+	SET_PERI_REG_MASK(SLC_RX_LINK, SLC_RXLINK_START);
+
+
+	//Start transmission
+	SET_PERI_REG_MASK(I2SCONF,I2S_I2S_TX_START);*/
 }
 
 

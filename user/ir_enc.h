@@ -10,6 +10,7 @@
 
 #define WS_BLOCKSIZE 4000
 
+volatile extern int ir_pending;
 void ICACHE_FLASH_ATTR ir_init();
 void ICACHE_FLASH_ATTR ir_push( uint8_t * buffer, uint16_t buffersize ); //Buffersize = Nr LEDs * 3j
 

@@ -29,14 +29,9 @@ void user_rf_pre_init(void) { /*nothing*/ }
 
 os_event_t    procTaskQueue[procTaskQueueLen];
 
-static void ICACHE_FLASH_ATTR procTask(os_event_t *events)
-{
-	CSTick( 0 );
-	system_os_post(procTaskPrio, 0, 0 );
-}
-
 int setcode = 0;
 
+#if 0 //IR Codes for one type of chinese LED
 //208 = color advance.
 //128 = Hose it (dim)
 //184 56 88 120  = ??? 
@@ -59,30 +54,119 @@ uint8_t setcodes[] =
 	176, //inbetewen (same as 168)
 	144, //Almost green
 };
-//Timer event.
-static void ICACHE_FLASH_ATTR myTimer(void *arg)
+#else
+//0, 32, 56, 120, 128, 184, 192, 224, 248 = unused
+//208 = white
+//200,216 = continuously fade.
+//232,240 = color jump.
+//96 = BLACKifies it.  Permablack  224 turns them on.
+uint8_t setcodes[] = 
 {
-	CSTick( 1 ); // Send a one to uart
+	136, //YELLOW
+	152, // ORANGE
+	168,
+	176,
+	144, //RED
+	72, // PURPLE
+	88,
+	104,
+	112,
+	80, //BLUE
+	8, // Cyan
+	24,
+	40,
+	48, 
+	16, // GREEN
+	208,
+};
+uint8_t setcodes_color[] = 
+{
+	255,255,0, //YELLOW
+	255,191,0, // ORANGE
+	255,127,0,
+	255,63,0,
+	255,0,0, //RED
+	255,0,63, // PURPLE
+	255,0,127,
+	255,0,191,
+	255,0,255,
+	0,0, 255, //BLUE
+	0,63,255, // Cyan
+	0,127,255,
+	0,191,191,
+	0,255,127, 
+	0,255,0, // GREEN
+	255,255,255,
+};
+
+
+#endif
+
+int udpcommanding  = 0;
+static void ICACHE_FLASH_ATTR sendcode( int setcode );
+static void ICACHE_FLASH_ATTR emitcolor( int r, int g, int b )
+{
+	if( r < 25 && g < 25 && b < 25 ) return;
+	int ic = 0;
+	int matchingcolor = -1;
+	int matchinglevel = 90000000;
+	for( ic = 0; ic < sizeof( setcodes_color )/3; ic++ )
+	{
+		int mr = setcodes_color[ic*3+0];
+		int mg = setcodes_color[ic*3+1];
+		int mb = setcodes_color[ic*3+2];
+		int diff = (r - mr)*(r-mr) + (g-mg)*(g-mg) + (b-mb)*(b-mb);
+		if( diff < matchinglevel )
+		{
+			matchinglevel = diff;
+			matchingcolor = ic;
+		}
+	}
+	sendcode( setcodes[matchingcolor] );
+}
+
+static void ICACHE_FLASH_ATTR sendcode( int setcode )
+{
 	uint8_t event[] = {
 		0b00000000,
-		0b11110111,
+		0b11111111,
 		0b00100000,
 		0b11011111,
 	};
 
-
+	
 	int send = setcode;
-	if( setcode == 0 )
+	if( setcode == -1 )
 	{
 		static int r = 0;
-		send =setcodes[r];
+		send = setcodes[r];
 		r++;
 		if( r == sizeof(setcodes) ) r = 0;
 	}
+
 	event[2] = send;
 	event[3] = ~send;
 
 	ir_push( event, sizeof( event ) );
+}
+
+
+static void ICACHE_FLASH_ATTR procTask(os_event_t *events)
+{
+	if( ir_pending == 0 && udpcommanding==255 )
+	{
+		printf( "ASDF\n" );
+		sendcode( setcode );
+	}
+
+	CSTick( 0 );
+	system_os_post(procTaskPrio, 0, 0 );
+}
+
+//Timer event.
+static void ICACHE_FLASH_ATTR myTimer(void *arg)
+{
+	CSTick( 1 ); // Send a one to uart
 }
 
 
@@ -92,7 +176,13 @@ udpserver_recv(void *arg, char *pusrdata, unsigned short len)
 {
 	struct espconn *pespconn = (struct espconn *)arg;
 
-	uart0_sendStr("X");
+	udpcommanding  = pusrdata[0];
+	if( ir_pending == 0 )
+	{
+		printf( "Codes: %d %d %d\n", pusrdata[1], pusrdata[3], pusrdata[2] );
+		emitcolor( pusrdata[1], pusrdata[3], pusrdata[2] );
+		uart0_sendStr("X");
+	}
 }
 
 void ICACHE_FLASH_ATTR charrx( uint8_t c )
@@ -142,7 +232,7 @@ void user_init(void)
 	//Timer example
 	os_timer_disarm(&some_timer);
 	os_timer_setfn(&some_timer, (os_timer_func_t *)myTimer, NULL);
-	os_timer_arm(&some_timer, 100, 1);
+	os_timer_arm(&some_timer, 60, 1);
 
 	printf( "Boot Ok.\n" );
 

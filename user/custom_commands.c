@@ -3,6 +3,7 @@
 #include <commonservices.h>
 #include "esp82xxutil.h"
 extern int setcode;
+extern int udpcommanding;
 int ICACHE_FLASH_ATTR CustomCommand(char * buffer, int retsize, char *pusrdata, unsigned short len) {
 	char * buffend = buffer;
 
@@ -16,7 +17,7 @@ int ICACHE_FLASH_ATTR CustomCommand(char * buffer, int retsize, char *pusrdata, 
 		case 'I': case 'i':
 			setcode = safe_atoi( &pusrdata[2]);
 			buffend += ets_sprintf( buffend, "CI\t%d", setcode );
-
+			udpcommanding = 255;
 			return buffend - buffer;
 		// Echo to UART
 		case 'E': case 'e':
